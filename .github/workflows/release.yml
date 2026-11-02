@@ -1,12 +1,13 @@
 # Pint's Add-ons release: when a push to main changes the "## Version:" line in the .toc,
 # tag that version, build the zip and upload it to CurseForge (and attach it to a GitHub release).
 # Pushes that don't change the version (notes, readme, work in progress) publish nothing.
+# "Run workflow" (Actions tab) publishes the current version - use it to retry a release that didn't upload.
 name: Release
 
 on:
   push:
     branches: [main]
-  workflow_dispatch:   # "Run workflow" button: publishes the current version if it hasn't been released yet
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -29,11 +30,17 @@ jobs:
             old=$(git show "HEAD~1:$toc" 2>/dev/null | grep -m1 '^## Version:' | sed 's/^## Version:[[:space:]]*//' | tr -d '\r' || true)
           fi
           echo "version=$new" >> "$GITHUB_OUTPUT"
-          if git rev-parse -q --verify "refs/tags/v$new" >/dev/null; then
+          tagged=false
+          if git rev-parse -q --verify "refs/tags/v$new" >/dev/null; then tagged=true; fi
+          echo "tagged=$tagged" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Publishing v$new (started by hand)."
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          elif [ "$tagged" = "true" ]; then
             echo "v$new is already released - nothing to publish."
             echo "go=false" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] || { [ -n "$old" ] && [ "$new" != "$old" ]; }; then
-            echo "Releasing v$new (was ${old:-none})."
+          elif [ -n "$old" ] && [ "$new" != "$old" ]; then
+            echo "Releasing v$new (was $old)."
             echo "go=true" >> "$GITHUB_OUTPUT"
           else
             echo "Version unchanged ($new) - nothing to publish."
@@ -41,16 +48,21 @@ jobs:
           fi
 
       - name: Tag the version
-        if: steps.ver.outputs.go == 'true'
+        if: steps.ver.outputs.go == 'true' && steps.ver.outputs.tagged == 'false'
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
           git tag -a "v${{ steps.ver.outputs.version }}" -m "v${{ steps.ver.outputs.version }}"
           git push origin "v${{ steps.ver.outputs.version }}"
 
+      # The packager skips a branch push that has a tag on it ("future tag"), expecting a separate tag build.
+      # Tags pushed from a workflow don't start new workflows, so build here as if this were that tag build.
       - name: Build and upload to CurseForge
         if: steps.ver.outputs.go == 'true'
-        uses: BigWigsMods/packager@v2
         env:
           CF_API_KEY: ${{ secrets.CF_API_KEY }}
           GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v${{ steps.ver.outputs.version }}
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/BigWigsMods/packager/v2/release.sh -o "$RUNNER_TEMP/release.sh"
+          GITHUB_REF="refs/tags/$TAG" GITHUB_REF_NAME="$TAG" GITHUB_REF_TYPE="tag" bash "$RUNNER_TEMP/release.sh"
