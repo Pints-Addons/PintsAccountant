@@ -1,0 +1,9 @@
+Pint's Accountant - Changelog
+
+v1.0.0
+- First public release.
+- Ledger: income and expenses by source for Session, Today (from the daily server reset), Week,
+  Month, Year and All time,
+  per character or the whole account, with net, gold per hour and gold on hand.
+- On-screen gold display (character, account, session) and a minimap button.
+- Gold paid to quest givers is counted under "Other expenses" (no separate Quest costs line).

@@ -1,0 +1,56 @@
+# Pint's Add-ons release: when a push to main changes the "## Version:" line in the .toc,
+# tag that version, build the zip and upload it to CurseForge (and attach it to a GitHub release).
+# Pushes that don't change the version (notes, readme, work in progress) publish nothing.
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:   # "Run workflow" button: publishes the current version if it hasn't been released yet
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Did the version change?
+        id: ver
+        run: |
+          toc=$(ls *.toc | head -n 1)
+          new=$(grep -m1 '^## Version:' "$toc" | sed 's/^## Version:[[:space:]]*//' | tr -d '\r')
+          old=""
+          if git rev-parse -q --verify HEAD~1 >/dev/null; then
+            old=$(git show "HEAD~1:$toc" 2>/dev/null | grep -m1 '^## Version:' | sed 's/^## Version:[[:space:]]*//' | tr -d '\r' || true)
+          fi
+          echo "version=$new" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/v$new" >/dev/null; then
+            echo "v$new is already released - nothing to publish."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] || { [ -n "$old" ] && [ "$new" != "$old" ]; }; then
+            echo "Releasing v$new (was ${old:-none})."
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Version unchanged ($new) - nothing to publish."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Tag the version
+        if: steps.ver.outputs.go == 'true'
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git tag -a "v${{ steps.ver.outputs.version }}" -m "v${{ steps.ver.outputs.version }}"
+          git push origin "v${{ steps.ver.outputs.version }}"
+
+      - name: Build and upload to CurseForge
+        if: steps.ver.outputs.go == 'true'
+        uses: BigWigsMods/packager@v2
+        env:
+          CF_API_KEY: ${{ secrets.CF_API_KEY }}
+          GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
