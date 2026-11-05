@@ -1,0 +1,52 @@
+name: Bug report
+description: Something in Pint's Accountant isn't working right
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this! The more of this you can fill in, the faster it gets fixed.
+  - type: input
+    id: version
+    attributes:
+      label: Add-on version
+      description: Shown in the add-on list on the character select screen, or in the CurseForge app.
+      placeholder: "e.g. 3.2"
+    validations:
+      required: true
+  - type: dropdown
+    id: game
+    attributes:
+      label: Game version
+      options:
+        - Classic Era
+        - Hardcore
+        - WoW Forever
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How can it be reproduced?
+      description: Your class and level help too.
+      placeholder: |
+        1. Open ...
+        2. Click ...
+  - type: textarea
+    id: error
+    attributes:
+      label: Error message (if any)
+      description: Copy the full error from BugSack, BugGrabber or the default error window. Type /console scriptErrors 1 to turn the game's error window on.
+      render: text
+  - type: textarea
+    id: addons
+    attributes:
+      label: Other add-ons you use (optional)

@@ -1,5 +1,9 @@
 Pint's Accountant - Changelog
 
+v1.0.1
+- Works on WoW Forever (the modern game client). Classic Era is unchanged.
+- Uses the modern item and add-on functions where the old ones are gone.
+
 v1.0.0
 - First public release.
 - Ledger: income and expenses by source for Session, Today (from the daily server reset), Week,

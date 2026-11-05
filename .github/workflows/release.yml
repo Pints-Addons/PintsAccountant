@@ -64,5 +64,8 @@ jobs:
           GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
           TAG: v${{ steps.ver.outputs.version }}
         run: |
+          # build exactly the tagged commit, so it uploads as a full release (not an alpha) even if
+          # other commits (notes, workflow fixes) came after the version change
+          git checkout -q "$TAG"
           curl -fsSL https://raw.githubusercontent.com/BigWigsMods/packager/v2/release.sh -o "$RUNNER_TEMP/release.sh"
           GITHUB_REF="refs/tags/$TAG" GITHUB_REF_NAME="$TAG" GITHUB_REF_TYPE="tag" bash "$RUNNER_TEMP/release.sh"

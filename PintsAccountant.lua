@@ -4,6 +4,9 @@
 -- or a window that was open (vendor, mailbox, trade, guild bank...), or a loot message.
 
 local ADDON = ...
+-- Compatibility: WoW Forever runs on the modern game client, where these older functions moved or were renamed.
+local GetItemInfo = GetItemInfo or (C_Item and C_Item.GetItemInfo)
+
 local PA = {}
 _G.PintsAccountant = PA
 
