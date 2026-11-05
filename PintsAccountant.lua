@@ -2,6 +2,17 @@
 -- Every change in your gold is recorded with a source. The source comes from what you were
 -- doing when the gold moved: an action you just took (buying, training, sending mail...),
 -- or a window that was open (vendor, mailbox, trade, guild bank...), or a loot message.
+-- coins drawn with the money icons (WoW Forever's own coin text came out as bare digits: 6s 64c showed as "664")
+local GetCoinTextureString = function(v)
+	v = math.floor((tonumber(v) or 0) + 0.5)
+	local neg = v < 0; if neg then v = -v end
+	local g, s, c = math.floor(v / 10000), math.floor(v / 100) % 100, v % 100
+	local out = {}
+	if g > 0 then out[#out + 1] = g .. "|TInterface\\MoneyFrame\\UI-GoldIcon:0:0:2:0|t" end
+	if s > 0 then out[#out + 1] = s .. "|TInterface\\MoneyFrame\\UI-SilverIcon:0:0:2:0|t" end
+	if c > 0 or #out == 0 then out[#out + 1] = c .. "|TInterface\\MoneyFrame\\UI-CopperIcon:0:0:2:0|t" end
+	return (neg and "-" or "") .. table.concat(out, " ")
+end
 
 local ADDON = ...
 -- Compatibility: WoW Forever runs on the modern game client, where these older functions moved or were renamed.

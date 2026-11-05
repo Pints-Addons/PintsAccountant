@@ -1,5 +1,8 @@
 Pint's Accountant - Changelog
 
+v1.0.3
+- WoW Forever: money shows with the gold, silver and copper icons (the game's own coin text showed bare digits).
+
 v1.0.2
 - WoW Forever: characters are known by their full name (first and second, e.g. "Pint Waterboy"), so characters that
   share a first name no longer share one record. Classic Era is unchanged.
