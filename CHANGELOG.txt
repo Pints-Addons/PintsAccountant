@@ -1,5 +1,8 @@
 Pint's Accountant - Changelog
 
+v1.0.4
+- WoW Forever: removes the leftover first-name-only characters ("Rain" next to "Rain Mon"), and they don't come back.
+
 v1.0.3
 - WoW Forever: money shows with the gold, silver and copper icons (the game's own coin text showed bare digits).
 

@@ -367,8 +367,10 @@ function PA:SeedFromLedger()
 	local realm = GetRealmName()
 	local list = L.chars[realm]
 	if type(list) ~= "table" then return end
+	-- WoW Forever (your name has a second name): first-name-only entries in Pint's Alts are left-overs; skip them
+	local full = charKey and charKey:sub(1, #charKey - #realm - 1):find(" ")
 	for name, rec in pairs(list) do
-		if type(rec) == "table" and type(rec.money) == "number" then
+		if type(rec) == "table" and type(rec.money) == "number" and not (full and not name:find(" ")) then
 			local key = name .. "-" .. realm
 			if key ~= charKey then
 				local c = db.chars[key]
@@ -825,8 +827,9 @@ local function InitCharacter()
 	charKey = (GetUnitName and GetUnitName("player", false) or UnitName("player")) .. "-" .. GetRealmName()
 	-- WoW Forever: characters saved under their first name alone (before second names were known) are cleared once
 	local realm = GetRealmName()
-	if charKey:sub(1, #charKey - #realm - 1):find(" ") and not (db.fullNames and db.fullNames[realm]) then
-		db.fullNames = db.fullNames or {}; db.fullNames[realm] = true
+	-- (done again as "fullNames2": the first time, Pint's Alts' old list put the first-name entries straight back)
+	if charKey:sub(1, #charKey - #realm - 1):find(" ") and not (db.fullNames2 and db.fullNames2[realm]) then
+		db.fullNames2 = db.fullNames2 or {}; db.fullNames2[realm] = true
 		for k in pairs(db.chars) do
 			local n = k:sub(1, #k - #realm - 1)
 			if k:sub(-#realm - 1) == "-" .. realm and not n:find(" ") then db.chars[k] = nil end
