@@ -427,7 +427,7 @@ end
 function PA:UpdateDisplay()
 	if not display then return end
 	local lines = {}
-	if db.dispChar then lines[#lines + 1] = { ClassName(UnitName("player"), char.class) .. ":", Coin(char.money) } end
+	if db.dispChar then lines[#lines + 1] = { ClassName((GetUnitName and GetUnitName("player", false) or UnitName("player")), char.class) .. ":", Coin(char.money) } end
 	if db.dispAccount then lines[#lines + 1] = { "Account:", Coin(PA:AccountGold()) } end
 	if db.dispSession then lines[#lines + 1] = { "Session:", Signed(PA:SessionNet()) } end
 	if not db.showDisplay or #lines == 0 then display:Hide() return end
@@ -750,7 +750,7 @@ end
 local function ButtonTooltip(self)
 	GameTooltip:SetOwner(self, "ANCHOR_LEFT")
 	GameTooltip:AddLine("|cffd4a017Pint's|r Accountant")
-	GameTooltip:AddDoubleLine(ClassName(UnitName("player"), char.class), Coin(char.money), nil, nil, nil, 1, 1, 1)
+	GameTooltip:AddDoubleLine(ClassName((GetUnitName and GetUnitName("player", false) or UnitName("player")), char.class), Coin(char.money), nil, nil, nil, 1, 1, 1)
 	GameTooltip:AddDoubleLine("Account", Coin(PA:AccountGold()), nil, nil, nil, 1, 1, 1)
 	GameTooltip:AddLine(" ")
 	GameTooltip:AddDoubleLine("Session earned", Coin(Total(session.inc)), nil, nil, nil, 1, 1, 1)
@@ -811,7 +811,16 @@ end
 -- Setup and events
 ---------------------------------------------------------------------------
 local function InitCharacter()
-	charKey = UnitName("player") .. "-" .. GetRealmName()
+	charKey = (GetUnitName and GetUnitName("player", false) or UnitName("player")) .. "-" .. GetRealmName()
+	-- WoW Forever: characters saved under their first name alone (before second names were known) are cleared once
+	local realm = GetRealmName()
+	if charKey:sub(1, #charKey - #realm - 1):find(" ") and not (db.fullNames and db.fullNames[realm]) then
+		db.fullNames = db.fullNames or {}; db.fullNames[realm] = true
+		for k in pairs(db.chars) do
+			local n = k:sub(1, #k - #realm - 1)
+			if k:sub(-#realm - 1) == "-" .. realm and not n:find(" ") then db.chars[k] = nil end
+		end
+	end
 	db.chars[charKey] = db.chars[charKey] or {}
 	char = db.chars[charKey]
 	char.allTime = char.allTime or { inc = {}, exp = {} }

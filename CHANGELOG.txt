@@ -1,5 +1,10 @@
 Pint's Accountant - Changelog
 
+v1.0.2
+- WoW Forever: characters are known by their full name (first and second, e.g. "Pint Waterboy"), so characters that
+  share a first name no longer share one record. Classic Era is unchanged.
+- Forever ledgers saved under a first name alone (before this fix) are cleared once.
+
 v1.0.1
 - Works on WoW Forever (the modern game client). Classic Era is unchanged.
 - Uses the modern item and add-on functions where the old ones are gone.

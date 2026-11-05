@@ -2,7 +2,7 @@
 ## Title: |cffd4a017Pint's|r Accountant
 ## Notes: Tracks gold earned and spent by source (session, 24 hours, week, month, year, all time) for each character and the whole account, with an on-screen gold display.
 ## Author: Jake (Pint's Add-ons, built with Claude)
-## Version: 1.0.1
+## Version: 1.0.2
 ## X-Curse-Project-ID: 1779343
 ## OptionalDeps: LibStub, LibDataBroker-1.1, LibDBIcon-1.0
 ## Category: Pint's Add-ons
