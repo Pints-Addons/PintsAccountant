@@ -1,5 +1,11 @@
 Pint's Accountant - Changelog
 
+v1.1
+- WoW Forever: the ledger has a tab for each currency next to Gold - Merchant's Favor, Honor Points and any other you
+  earn. Each shows what came in (quest rewards, loot, honorable kills, other) and what went out (vendor purchases,
+  other) for the session, today, week, month, year and all time, plus how much every character holds.
+- Options: show your currencies on the on-screen gold display. The minimap button's tooltip lists them too.
+
 v1.0.4
 - WoW Forever: removes the leftover first-name-only characters ("Rain" next to "Rain Mon"), and they don't come back.
 

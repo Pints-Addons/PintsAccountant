@@ -33,6 +33,12 @@ local EXPENSE = {
 	"Guild & tabard fees", "Barber", "Other expenses",
 }
 
+-- Currencies (WoW Forever: Merchant's Favor, Honor Points...) get a ledger tab each, with their own short list of sources
+local CUR_INC = { "Quest rewards", "Looted", "Honorable kills", "Other gains" }
+local CUR_EXP = { "Vendor purchases", "Other spending" }
+local CUR = C_CurrencyInfo
+local HAS_CUR = CUR and CUR.GetCurrencyInfo and CUR.GetCurrencyListSize and true or false
+
 -- What an open window means for money coming in (inc) or going out (exp).
 local CONTEXTS = {
 	merchant  = { inc = "Vendor sales", exp = "Other vendor purchases" },
@@ -50,12 +56,12 @@ local CONTEXTS = {
 	talent    = { exp = "Talent resets" },
 }
 
-local DEFAULTS = { showDisplay = true, dispChar = true, dispAccount = true, dispSession = false, dispLock = false }
+local DEFAULTS = { showDisplay = true, dispChar = true, dispAccount = true, dispSession = false, dispLock = false, dispCur = false }
 local CLOSE_GRACE = 3      -- seconds a closed window still counts (money often lands just after closing)
 local PENDING_LIFE = 5     -- seconds an action waits for its gold change
 
 local db, char, charKey
-local session = { inc = {}, exp = {}, start = time() }
+local session = { inc = {}, exp = {}, start = time(), cur = {} }
 local lastMoney
 local active, pending = {}, {}
 local trainerIsProfession = false
@@ -98,15 +104,31 @@ end
 ---------------------------------------------------------------------------
 -- Recording
 ---------------------------------------------------------------------------
-local function Record(dir, cat, amt)
+-- the record a gold or currency figure lives in: the character itself for gold, char.cur[name] for a currency
+local function Book(c, cname)
+	if not cname then return c end
+	c.cur = c.cur or {}
+	local b = c.cur[cname]
+	if not b then b = { allTime = { inc = {}, exp = {} }, hours = {}, days = {} }; c.cur[cname] = b end
+	return b
+end
+local function SessionBook(cname)
+	if not cname then return session end
+	session.cur = session.cur or {}
+	session.cur[cname] = session.cur[cname] or { inc = {}, exp = {} }
+	return session.cur[cname]
+end
+
+local function Record(dir, cat, amt, cname)
 	if amt <= 0 then return end
+	local b = Book(char, cname)
 	local h, d = HourNow(), DayNow()
-	char.hours[h] = char.hours[h] or {}
-	char.days[d] = char.days[d] or {}
-	Add(char.allTime, dir, cat, amt)
-	Add(char.hours[h], dir, cat, amt)
-	Add(char.days[d], dir, cat, amt)
-	Add(session, dir, cat, amt)
+	b.hours[h] = b.hours[h] or {}
+	b.days[d] = b.days[d] or {}
+	Add(b.allTime, dir, cat, amt)
+	Add(b.hours[h], dir, cat, amt)
+	Add(b.days[d], dir, cat, amt)
+	Add(SessionBook(cname), dir, cat, amt)
 end
 
 local function AddPending(dir, cat, extra)
@@ -163,11 +185,63 @@ local function OnMoneyChanged()
 end
 
 ---------------------------------------------------------------------------
+-- Currencies
+---------------------------------------------------------------------------
+local function Learn()
+	if not HAS_CUR then return end
+	db.currencies = db.currencies or {}
+	for i = 1, (CUR.GetCurrencyListSize() or 0) do
+		local info = CUR.GetCurrencyListInfo(i)
+		if info and not info.isHeader and info.name then
+			local link = CUR.GetCurrencyListLink and CUR.GetCurrencyListLink(i)
+			local id = link and tonumber(link:match("currency:(%d+)"))
+			if id then db.currencies[info.name] = { id = id, icon = info.iconFileID } end
+		end
+	end
+end
+
+local CurrencyCategory   -- (defined after the window tracking it reads)
+
+-- a currency changed: record the difference from what we last saw (the first sighting only sets the starting amount)
+local function OnCurrencyChanged(id, silent)
+	if not HAS_CUR or not char then return end
+	db.currencies = db.currencies or {}
+	local ids = {}
+	if id then ids[1] = id else for _, k in pairs(db.currencies) do ids[#ids + 1] = k.id end end
+	for _, cid in ipairs(ids) do
+		local info = CUR.GetCurrencyInfo(cid)
+		if info and info.name and info.name ~= "" and info.quantity then
+			db.currencies[info.name] = db.currencies[info.name] or { id = cid, icon = info.iconFileID }
+			local b = Book(char, info.name)
+			if b.qty and not silent then
+				local delta = info.quantity - b.qty
+				if delta ~= 0 then
+					local dir = delta > 0 and "inc" or "exp"
+					Record(dir, CurrencyCategory(dir, info.name), math.abs(delta), info.name)
+				end
+			end
+			b.qty = info.quantity
+		end
+	end
+	PA:Refresh()
+end
+PA.OnCurrencyChanged = OnCurrencyChanged
+
+---------------------------------------------------------------------------
 -- Context tracking (windows open/closed)
 ---------------------------------------------------------------------------
 local function Open(name) active[name] = { opened = GetTime(), expire = math.huge } end
 local function Close(name) if active[name] then active[name].expire = GetTime() + CLOSE_GRACE end end
 local function Pulse(name, seconds) active[name] = { opened = GetTime(), expire = GetTime() + seconds } end
+
+local function IsActive(name) local st = active[name]; return st and st.expire > GetTime() end
+CurrencyCategory = function(dir, cname)
+	if dir == "exp" then return IsActive("merchant") and "Vendor purchases" or "Other spending" end
+	if IsActive("quest") then return "Quest rewards" end
+	if IsActive("loot") then return "Looted" end
+	if cname and cname:find("Honor") then return "Honorable kills" end
+	return "Other gains"
+end
 
 local OPEN_EVENTS = {
 	MERCHANT_SHOW = "merchant", TRAINER_SHOW = "trainer", TAXIMAP_OPENED = "taxi",
@@ -307,17 +381,18 @@ local function TodayStart()
 end
 PA.TodayStart = TodayStart
 
-function PA:Summary(period, scope)
+function PA:Summary(period, scope, cname)
 	local res = { inc = {}, exp = {} }
 	local key = scope or charKey
 	if period == "session" then
 		-- the session only exists for the character you're playing
-		if key == "account" or key == charKey then Merge(res, session) end
+		if key == "account" or key == charKey then Merge(res, cname and session.cur and session.cur[cname] or (not cname and session) or nil) end
 		return res
 	end
 	local chars = (key == "account") and db.chars or { [key] = db.chars[key] }
 	local h, d = HourNow(), DayNow()
-	for _, c in pairs(chars) do
+	for _, ch in pairs(chars) do
+		local c = cname and (ch.cur and ch.cur[cname]) or (not cname and ch) or { hours = {}, days = {} }
 		if period == "all" then
 			Merge(res, c.allTime)
 		elseif period == "day" then
@@ -443,6 +518,15 @@ function PA:UpdateDisplay()
 	if db.dispChar then lines[#lines + 1] = { ClassName((GetUnitName and GetUnitName("player", false) or UnitName("player")), char.class) .. ":", Coin(char.money) } end
 	if db.dispAccount then lines[#lines + 1] = { "Account:", Coin(PA:AccountGold()) } end
 	if db.dispSession then lines[#lines + 1] = { "Session:", Signed(PA:SessionNet()) } end
+	if db.dispCur and char and char.cur then
+		local names = {}
+		for n, b in pairs(char.cur) do if (b.qty or 0) > 0 then names[#names + 1] = n end end
+		table.sort(names)
+		for _, n in ipairs(names) do
+			local k = db.currencies and db.currencies[n]
+			lines[#lines + 1] = { n .. ":", char.cur[n].qty .. (k and k.icon and (" |T" .. k.icon .. ":12:12:0:0|t") or "") }
+		end
+	end
 	if not db.showDisplay or #lines == 0 then display:Hide() return end
 	local LINE, GAP = 14, 10
 	local wl, wv = 0, 0
@@ -481,9 +565,11 @@ local NCOL = #PERIODS
 local SHEET_W = CAT_W + COL_W * NCOL
 
 -- compact money for cells: 12g 04s 56c, 0 when nothing
+local curView = nil   -- nil = gold, or a currency's name
 local function Cell(v, color)
 	v = math.floor(v or 0)
 	if v == 0 then return "|cff6a6a6a0|r" end
+	if curView then return (color or "|cffffffff") .. v .. "|r" end
 	local neg = v < 0; v = math.abs(v)
 	local g, s, c = math.floor(v / 10000), math.floor(v / 100) % 100, v % 100
 	local txt
@@ -546,21 +632,24 @@ function PA:RefreshLedger()
 	local key = isAll and "account" or (viewScope or charKey)
 	local viewChar = db.chars[key]
 	ledger.scopeBtn:SetText((isAll and "All characters" or ClassName(key, viewChar and viewChar.class)) .. "  |cffaaaaaav|r")
+	if curView and not (db.currencies and db.currencies[curView]) then curView = nil end
+	PA:UpdateTabs()
+	local INC, EXP = curView and CUR_INC or INCOME, curView and CUR_EXP or EXPENSE
 	-- one summary per column
 	local sums = {}
-	for c, p in ipairs(PERIODS) do sums[c] = PA:Summary(p.key, viewScope) end
+	for c, p in ipairs(PERIODS) do sums[c] = PA:Summary(p.key, viewScope, curView) end
 	local i = 0
 	local function line(kind, label, values, color) i = i + 1; Fill(i, kind, label, values, color) end
 	local function catValues(dir, cat) local v = {}; for c = 1, NCOL do v[c] = sums[c][dir][cat] or 0 end; return v end
 	local function totals(dir) local v = {}; for c = 1, NCOL do v[c] = Total(sums[c][dir]) end; return v end
 
 	line("section", "Income")
-	for _, cat in ipairs(INCOME) do line("row", "   " .. cat, catValues("inc", cat)) end
+	for _, cat in ipairs(INC) do line("row", "   " .. cat, catValues("inc", cat)) end
 	local inc = totals("inc")
 	line("total", "Total income", inc, "|cff40ff40")
 	line("blank", "")
 	line("section", "Expenses")
-	for _, cat in ipairs(EXPENSE) do line("row", "   " .. cat, catValues("exp", cat)) end
+	for _, cat in ipairs(EXP) do line("row", "   " .. cat, catValues("exp", cat)) end
 	local exp = totals("exp")
 	line("total", "Total expenses", exp, "|cffff5050")
 	line("blank", "")
@@ -574,23 +663,29 @@ function PA:RefreshLedger()
 	local hours = math.max(1 / 60, (time() - session.start) / 3600)
 	local perHour = {}
 	perHour[1] = Cell(math.floor(net[1] / hours), net[1] >= 0 and "|cff40ff40" or "|cffff5050")
-	line("row", "   Gold per hour", perHour)
+	line("row", curView and "   Per hour" or "   Gold per hour", perHour)
 	local len = {}; len[1] = "|cffffffff" .. (SecondsToTime and SecondsToTime(time() - session.start, true) or "") .. "|r"
 	line("row", "   Session length", len)
+	local function Held(c)
+		if not c then return 0 end
+		if curView then return c.cur and c.cur[curView] and c.cur[curView].qty or 0 end
+		return c.money or 0
+	end
 	local onHand = {}
-	if isAll then onHand[NCOL] = Cell(PA:AccountGold())
-	elseif key == charKey then onHand[NCOL] = Cell(GetMoney())
-	else onHand[NCOL] = Cell(viewChar and viewChar.money or 0) end
-	line("row", isAll and "   Gold on all characters" or "   Gold on hand", onHand)
+	if isAll then local t = 0; for _, c in pairs(db.chars) do t = t + Held(c) end; onHand[NCOL] = Cell(t)
+	elseif key == charKey and not curView then onHand[NCOL] = Cell(GetMoney())
+	else onHand[NCOL] = Cell(Held(viewChar)) end
+	local what = curView or "Gold"
+	line("row", isAll and ("   " .. what .. " on all characters") or ("   " .. what .. " on hand"), onHand)
 
 	if isAll then
 		line("blank", "")
 		line("section", "Characters")
 		local list = {}
 		for key, c in pairs(db.chars) do list[#list + 1] = { key = key, c = c } end
-		table.sort(list, function(a, b) return (a.c.money or 0) > (b.c.money or 0) end)
+		table.sort(list, function(a, b) return Held(a.c) > Held(b.c) end)
 		for _, e in ipairs(list) do
-			local v = {}; v[NCOL] = Cell(e.c.money or 0)
+			local v = {}; v[NCOL] = Cell(Held(e.c))
 			line("row", "   " .. ClassName(e.key, e.c.class), v)
 		end
 	end
@@ -600,7 +695,7 @@ function PA:RefreshLedger()
 	local want = i * ROW_H + 96
 	local room = UIParent:GetHeight() - 40
 	ledger:SetHeight(math.max(300, math.min(want, room)))
-	ledger.net:SetText("Session net  " .. Signed(net[1]))
+	ledger.net:SetText("Session net  " .. (curView and ((net[1] > 0 and "|cff40ff40+" or net[1] < 0 and "|cffff5050" or "") .. net[1] .. "|r") or Signed(net[1])))
 end
 
 local function CreateLedger()
@@ -620,6 +715,7 @@ local function CreateLedger()
 	local title = ledger:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
 	title:SetPoint("TOP", 0, -5)
 	title:SetText("|cffd4a017Pint's|r Accountant  -  Ledger")
+	ledger.titleText = title
 
 	local scope = CreateFrame("Button", nil, ledger, "UIPanelButtonTemplate")
 	scope:SetSize(190, 20)
@@ -670,6 +766,44 @@ local function CreateLedger()
 	scope:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	ledger.scopeBtn = scope
 
+	-- tabs: Gold, then one per currency (WoW Forever)
+	ledger.tabs = {}
+	local function Tab(i)
+		local t = ledger.tabs[i]
+		if t then return t end
+		t = CreateFrame("Button", nil, ledger, "UIPanelButtonTemplate")
+		t:SetSize(128, 20); t:SetPoint("LEFT", scope, "RIGHT", 10 + (i - 1) * 132, 0)
+		t:SetScript("OnClick", function(self) curView = self.cname; PA:RefreshLedger() end)
+		ledger.tabs[i] = t
+		return t
+	end
+	function PA:UpdateTabs()
+		local names = {}
+		for n in pairs(db.currencies or {}) do names[#names + 1] = n end
+		table.sort(names, function(a, b)
+			local pa, pb = a == "Merchant's Favor" and 0 or a:find("Honor") and 1 or 2, b == "Merchant's Favor" and 0 or b:find("Honor") and 1 or 2
+			if pa ~= pb then return pa < pb end
+			return a < b
+		end)
+		local n = 0
+		if #names > 0 then
+			n = 1; local g = Tab(1); g.cname = nil
+			g:SetText((curView == nil and "|cff40ff40" or "") .. "Gold|r"); g:Show()
+			for _, name in ipairs(names) do
+				if n >= 4 then break end     -- (Gold and three currencies fit)
+				n = n + 1
+				local t = Tab(n); t.cname = name
+				local k = db.currencies[name]
+				local label = (k and k.icon and ("|T" .. k.icon .. ":14:14:0:0|t ") or "") .. name
+				t:SetText((curView == name and "|cff40ff40" or "") .. label .. "|r"); t:Show()
+			end
+		end
+		for i = n + 1, #ledger.tabs do ledger.tabs[i]:Hide() end
+		-- with tabs along the top, the session net moves up into the title bar
+		ledger.net:ClearAllPoints()
+		if n > 0 then ledger.net:SetPoint("TOPLEFT", 12, -6) else ledger.net:SetPoint("TOPRIGHT", -18, -34) end
+	end
+
 	ledger.net = ledger:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 	ledger.net:SetPoint("TOPRIGHT", -18, -34)
 
@@ -711,7 +845,7 @@ local options
 
 local function CreateOptions()
 	options = CreateFrame("Frame", "PintsAccountantOptions", UIParent, "BasicFrameTemplateWithInset")
-	options:SetSize(240, 220)
+	options:SetSize(240, 244)
 	options:SetPoint("CENTER", 0, 120)
 	options:SetFrameStrata("DIALOG")
 	options:SetMovable(true)
@@ -744,14 +878,15 @@ local function CreateOptions()
 	Check("Character gold", "dispChar", 34, -58)
 	Check("Account gold", "dispAccount", 34, -82)
 	Check("Session gain / loss", "dispSession", 34, -106)
-	Check("Lock position", "dispLock", 34, -130)
+	Check("Currencies (Merchant's Favor...)", "dispCur", 34, -130)
+	Check("Lock position", "dispLock", 34, -154)
 
 	local reset = CreateFrame("Button", nil, options, "UIPanelButtonTemplate")
 	reset:SetSize(120, 22)
 	reset:SetPoint("BOTTOM", 0, 16)
 	reset:SetText("Reset session")
 	reset:SetScript("OnClick", function()
-		session = { inc = {}, exp = {}, start = time() }
+		session = { inc = {}, exp = {}, start = time(), cur = {} }
 		PA:Refresh()
 		Print("session reset.")
 	end)
@@ -772,6 +907,13 @@ local function ButtonTooltip(self)
 	GameTooltip:AddDoubleLine("Gold per hour", Signed(math.floor(GoldPerHour())))
 	local day = PA:Summary("day", "char")
 	GameTooltip:AddDoubleLine("Today (since reset)", Signed(Total(day.inc) - Total(day.exp)))
+	if char.cur and next(char.cur) then
+		GameTooltip:AddLine(" ")
+		for n, b in pairs(char.cur) do
+			local k = db.currencies and db.currencies[n]
+			GameTooltip:AddDoubleLine((k and k.icon and ("|T" .. k.icon .. ":14:14:0:0|t ") or "") .. n, b.qty or 0, nil, nil, nil, 1, 1, 1)
+		end
+	end
 	GameTooltip:AddLine(" ")
 	GameTooltip:AddLine("Left-click: ledger", 0.8, 0.8, 0.8)
 	GameTooltip:AddLine("Right-click: display options", 0.8, 0.8, 0.8)
@@ -847,6 +989,10 @@ local function InitCharacter()
 	local h, d = HourNow(), DayNow()
 	for hour in pairs(char.hours) do if hour <= h - 48 then char.hours[hour] = nil end end
 	for day in pairs(char.days) do if day <= d - 400 then char.days[day] = nil end end
+	for _, b in pairs(char.cur or {}) do
+		for hour in pairs(b.hours or {}) do if hour <= h - 48 then b.hours[hour] = nil end end
+		for day in pairs(b.days or {}) do if day <= d - 400 then b.days[day] = nil end end
+	end
 end
 
 local ev = CreateFrame("Frame")
@@ -885,6 +1031,11 @@ ev:SetScript("OnEvent", function(self, event, ...)
 		PA:UpdateDisplay()
 		for e in pairs(OPEN_EVENTS) do pcall(self.RegisterEvent, self, e) end
 		for e in pairs(CLOSE_EVENTS) do pcall(self.RegisterEvent, self, e) end
+		if HAS_CUR then
+			pcall(Learn)
+			pcall(OnCurrencyChanged, nil, true)      -- (takes each currency's amount at login; nothing is recorded)
+			pcall(self.RegisterEvent, self, "CURRENCY_DISPLAY_UPDATE")
+		end
 		for _, e in ipairs({ "PLAYER_MONEY", "CHAT_MSG_MONEY", "QUEST_TURNED_IN", "CONFIRM_TALENT_WIPE",
 			"PLAYER_INTERACTION_MANAGER_FRAME_SHOW", "PLAYER_INTERACTION_MANAGER_FRAME_HIDE", "PLAYER_LOGOUT" }) do
 			pcall(self.RegisterEvent, self, e)
@@ -895,6 +1046,11 @@ ev:SetScript("OnEvent", function(self, event, ...)
 		Pulse("loot", 2)
 	elseif event == "QUEST_TURNED_IN" then
 		AddPending("inc", "Quest rewards")
+		Pulse("quest", 3)
+	elseif event == "CURRENCY_DISPLAY_UPDATE" then
+		local id = ...
+		if type(id) == "number" and not (db.currencies and next(db.currencies)) then pcall(Learn) end
+		OnCurrencyChanged(type(id) == "number" and id or nil)
 	elseif event == "CONFIRM_TALENT_WIPE" then
 		Pulse("talent", 60)
 	elseif event == "PLAYER_INTERACTION_MANAGER_FRAME_SHOW" then
@@ -968,7 +1124,7 @@ do
 	end
 	local function Tip(tt)
 		tt:AddLine("Pint's Accountant")
-		tt:AddLine("Left-click: gold ledger", 1, 1, 1)
+		tt:AddLine("Left-click: ledger (gold and currencies)", 1, 1, 1)
 		tt:AddLine("Right-click: options", 1, 1, 1)
 		tt:AddLine("Drag to move  -  /pa minimap to hide", 0.5, 0.5, 0.5)
 	end
