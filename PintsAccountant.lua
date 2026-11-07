@@ -678,6 +678,42 @@ function PA:RefreshLedger()
 	local what = curView or "Gold"
 	line("row", isAll and ("   " .. what .. " on all characters") or ("   " .. what .. " on hand"), onHand)
 
+	-- currencies (WoW Forever: Merchant's Favor, Honor Points...): one line each - how many gained (or spent) in each
+	-- period, and how many you have in the last column
+	local cnames = {}
+	for n in pairs(db.currencies or {}) do cnames[#cnames + 1] = n end
+	table.sort(cnames, function(a, b)
+		local pa, pb = a == "Merchant's Favor" and 0 or a:find("Honor") and 1 or 2, b == "Merchant's Favor" and 0 or b:find("Honor") and 1 or 2
+		if pa ~= pb then return pa < pb end
+		return a < b
+	end)
+	local function Count(v)
+		v = math.floor(v or 0)
+		if v == 0 then return "|cff6a6a6a0|r" end
+		return (v > 0 and "|cff40ff40+" or "|cffff5050") .. v .. "|r"
+	end
+	local shown = false
+	for _, cname in ipairs(cnames) do
+		local v, any = {}, false
+		for c = 1, NCOL - 1 do
+			local sm = PA:Summary(PERIODS[c].key, viewScope, cname)
+			local d = Total(sm.inc) - Total(sm.exp)
+			if d ~= 0 then any = true end
+			v[c] = Count(d)
+		end
+		local have = 0
+		if isAll then for _, c in pairs(db.chars) do have = have + (c.cur and c.cur[cname] and c.cur[cname].qty or 0) end
+		else have = viewChar and viewChar.cur and viewChar.cur[cname] and viewChar.cur[cname].qty or 0 end
+		if have > 0 or any then
+			if not shown then
+				line("blank", ""); line("section", "Currencies   |cffaaaaaa(gained in each period - and how many you have)|r"); shown = true
+			end
+			v[NCOL] = "|cffffffff" .. have .. "|r"
+			local k = db.currencies[cname]
+			line("row", "   " .. (k and k.icon and ("|T" .. k.icon .. ":12:12:0:0|t ") or "") .. cname, v)
+		end
+	end
+
 	if isAll then
 		line("blank", "")
 		line("section", "Characters")
@@ -718,7 +754,9 @@ local function CreateLedger()
 	ledger.titleText = title
 
 	local scope = CreateFrame("Button", nil, ledger, "UIPanelButtonTemplate")
-	scope:SetSize(190, 20)
+	scope:SetSize(260, 20)
+	-- long names (Forever realms) stay inside the button
+	do local fs = scope:GetFontString(); if fs then fs:SetPoint("LEFT", 8, 0); fs:SetPoint("RIGHT", -8, 0); fs:SetWordWrap(false) end end
 	scope:SetPoint("TOPLEFT", 14, -30)
 	-- character picker: plain buttons, no Blizzard dropdown (avoids taint)
 	local menu = CreateFrame("Frame", nil, ledger, "BackdropTemplate")
@@ -785,8 +823,9 @@ local function CreateLedger()
 			if pa ~= pb then return pa < pb end
 			return a < b
 		end)
+		curView = nil
 		local n = 0
-		if #names > 0 then
+		if false then        -- (currencies now sit at the bottom of the gold ledger instead of a tab each)
 			n = 1; local g = Tab(1); g.cname = nil
 			g:SetText((curView == nil and "|cff40ff40" or "") .. "Gold|r"); g:Show()
 			for _, name in ipairs(names) do

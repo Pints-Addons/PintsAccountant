@@ -1,5 +1,10 @@
 Pint's Accountant - Changelog
 
+v1.1.1
+- Currencies no longer take a tab each: the ledger shows one line per currency (Merchant's Favor, Honor Points...)
+  at the bottom - how many you gained (or spent) this session, today, this week, month and year, and how many you have.
+- Long character names (WoW Forever realms) stay inside the character button.
+
 v1.1
 - WoW Forever: the ledger has a tab for each currency next to Gold - Merchant's Favor, Honor Points and any other you
   earn. Each shows what came in (quest rewards, loot, honorable kills, other) and what went out (vendor purchases,
