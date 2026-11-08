@@ -357,6 +357,7 @@ local PERIODS = {
 	{ key = "week",    label = "Week" },
 	{ key = "month",   label = "Month" },
 	{ key = "year",    label = "Year" },
+	{ key = "custom",  label = "Dates" },     -- a day or a range of days you pick (click its heading)
 	{ key = "all",     label = "All" },
 }
 local PERIOD_DAYS = { week = 7, month = 30, year = 365 }
@@ -395,6 +396,9 @@ function PA:Summary(period, scope, cname)
 		local c = cname and (ch.cur and ch.cur[cname]) or (not cname and ch) or { hours = {}, days = {} }
 		if period == "all" then
 			Merge(res, c.allTime)
+		elseif period == "custom" then
+			local from, to = PA:Range()
+			for day, t in pairs(c.days) do if day >= from and day <= to then Merge(res, t) end end
 		elseif period == "day" then
 			local first = math.floor((TodayStart() + 60) / 3600)      -- the hour the reset happened in
 			for hour, t in pairs(c.hours) do if hour >= first then Merge(res, t) end end
@@ -407,6 +411,28 @@ function PA:Summary(period, scope, cname)
 end
 
 local function Total(t) local s = 0 for _, v in pairs(t) do s = s + v end return s end
+
+-- the "Dates" column: one day, or a range of days (kept between sessions). Days are counted the way they're stored.
+function PA:Range()
+	local today = DayNow()
+	local from, to = db.rangeFrom or today, db.rangeTo or db.rangeFrom or today
+	if from > to then from, to = to, from end
+	return from, to
+end
+local function DayText(day, withYear) return date(withYear and "%b %d, %Y" or "%b %d", day * 86400 + 43200) end
+PA.DayText = DayText
+function PA:RangeLabel()
+	local from, to = PA:Range()
+	if from == to then
+		local today = DayNow()
+		if from == today then return DayText(from) elseif from == today - 1 then return "Yesterday" end
+		return DayText(from)
+	end
+	if date("%m", from * 86400 + 43200) == date("%m", to * 86400 + 43200) then
+		return DayText(from) .. "-" .. date("%d", to * 86400 + 43200)
+	end
+	return DayText(from) .. "-" .. DayText(to)
+end
 
 -- Characters you haven't logged into since installing Pint's Accountant (or whose gold was saved as 0 by the
 -- logout bug) pick up their gold from Altoholic's DataStore, when it's installed and its record is newer.
@@ -627,6 +653,7 @@ end
 
 function PA:RefreshLedger()
 	if not ledger or not ledger:IsShown() then return end
+	if ledger.rangeHead then ledger.rangeHead:SetText("|cff80c0ff" .. PA:RangeLabel() .. "|r  |cffaaaaaav|r") end
 	if viewScope and viewScope ~= "account" and not db.chars[viewScope] then viewScope = nil end
 	local isAll = viewScope == "account"
 	local key = isAll and "account" or (viewScope or charKey)
@@ -643,13 +670,24 @@ function PA:RefreshLedger()
 	local function catValues(dir, cat) local v = {}; for c = 1, NCOL do v[c] = sums[c][dir][cat] or 0 end; return v end
 	local function totals(dir) local v = {}; for c = 1, NCOL do v[c] = Total(sums[c][dir]) end; return v end
 
+	-- a category with nothing in any column is left out (it comes back as soon as something lands in it);
+	-- /pa zeros shows them all
+	local function catLine(dir, cat)
+		local v = catValues(dir, cat)
+		if not db.showZeros then
+			local any = false
+			for c = 1, NCOL do if v[c] ~= 0 then any = true; break end end
+			if not any then return end
+		end
+		line("row", "   " .. cat, v)
+	end
 	line("section", "Income")
-	for _, cat in ipairs(INC) do line("row", "   " .. cat, catValues("inc", cat)) end
+	for _, cat in ipairs(INC) do catLine("inc", cat) end
 	local inc = totals("inc")
 	line("total", "Total income", inc, "|cff40ff40")
 	line("blank", "")
 	line("section", "Expenses")
-	for _, cat in ipairs(EXP) do line("row", "   " .. cat, catValues("exp", cat)) end
+	for _, cat in ipairs(EXP) do catLine("exp", cat) end
 	local exp = totals("exp")
 	line("total", "Total expenses", exp, "|cffff5050")
 	line("blank", "")
@@ -728,7 +766,7 @@ function PA:RefreshLedger()
 	for j = i + 1, #rows do rows[j]:Hide() end
 	sheet:SetHeight(math.max(1, i * ROW_H))
 	-- tall enough to show every row without scrolling, as long as the screen allows
-	local want = i * ROW_H + 96
+	local want = i * ROW_H + 118
 	local room = UIParent:GetHeight() - 40
 	ledger:SetHeight(math.max(300, math.min(want, room)))
 	ledger.net:SetText("Session net  " .. (curView and ((net[1] > 0 and "|cff40ff40+" or net[1] < 0 and "|cffff5050" or "") .. net[1] .. "|r") or Signed(net[1])))
@@ -803,6 +841,20 @@ local function CreateLedger()
 	end)
 	scope:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	ledger.scopeBtn = scope
+	-- "Hide empty rows": categories with 0 in every column fold away, and come back once a number lands in any column
+	local hide = CreateFrame("CheckButton", nil, ledger, "UICheckButtonTemplate")
+	hide:SetSize(22, 22); hide:SetPoint("BOTTOMLEFT", 12, 8)
+	hide.label = hide:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall"); hide.label:SetPoint("LEFT", hide, "RIGHT", 2, 0)
+	hide.label:SetText("Hide empty rows")
+	hide:SetScript("OnShow", function(self) self:SetChecked(not db.showZeros) end)
+	hide:SetScript("OnClick", function(self) db.showZeros = not self:GetChecked(); PA:RefreshLedger() end)
+	hide:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_TOP"); GameTooltip:AddLine("Hide empty rows")
+		GameTooltip:AddLine("A category with 0 in every column is left out. It shows again as soon as something lands in any column.", 1, 1, 1, true)
+		GameTooltip:Show()
+	end)
+	hide:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	ledger.hideBtn = hide
 
 	-- tabs: Gold, then one per currency (WoW Forever)
 	ledger.tabs = {}
@@ -855,11 +907,27 @@ local function CreateLedger()
 	for c, p in ipairs(PERIODS) do
 		local fs = head:CreateFontString(nil, "OVERLAY", "PintsAccountantHeadFont")
 		fs:SetPoint("RIGHT", head, "LEFT", CAT_W + c * COL_W - 6, 0); fs:SetText(p.label == "All" and "All time" or p.label)
+		if p.key == "custom" then
+			-- the heading is a button: it shows the days picked, click to pick others
+			local b = CreateFrame("Button", nil, head)
+			b:SetPoint("TOPLEFT", head, "TOPLEFT", CAT_W + (c - 1) * COL_W, 0); b:SetSize(COL_W, 20)
+			local bh = b:CreateTexture(nil, "HIGHLIGHT"); bh:SetAllPoints(); bh:SetColorTexture(1, 0.82, 0, 0.2)
+			b:SetScript("OnClick", function(self) PA:ToggleRangePicker(self) end)
+			b:SetScript("OnEnter", function(self)
+				local from, to = PA:Range()
+				GameTooltip:SetOwner(self, "ANCHOR_TOP")
+				GameTooltip:AddLine(from == to and DayText(from, true) or (DayText(from, true) .. "  to  " .. DayText(to, true)))
+				GameTooltip:AddLine("Click to pick a day or a range of days", 1, 1, 1)
+				GameTooltip:Show()
+			end)
+			b:SetScript("OnLeave", function() GameTooltip:Hide() end)
+			ledger.rangeHead = fs
+		end
 	end
 
 	local sf = CreateFrame("ScrollFrame", "PintsAccountantScroll", ledger, "UIPanelScrollFrameTemplate")
 	sf:SetPoint("TOPLEFT", 14, -78)
-	sf:SetPoint("BOTTOMRIGHT", -36, 12)
+	sf:SetPoint("BOTTOMRIGHT", -36, 34)   -- (room under it for the "Hide empty rows" box)
 	sheet = CreateFrame("Frame", nil, sf)
 	sheet:SetSize(SHEET_W, 1)
 	sf:SetScrollChild(sheet)
@@ -875,6 +943,73 @@ local function CreateLedger()
 	-- keep the session figures ticking while it's open
 	local t = 0
 	ledger:SetScript("OnUpdate", function(_, el) t = t + el; if t > 5 then t = 0; PA:RefreshLedger() end end)
+end
+
+-- the day picker: From and To, a day back or forward at a time (Shift: a week), "Single day" keeps them the same,
+-- and quick picks
+local picker
+function PA:ToggleRangePicker(anchor)
+	if picker and picker:IsShown() then picker:Hide(); return end
+	if not picker then
+		picker = CreateFrame("Frame", nil, ledger, "BackdropTemplate")
+		picker:SetSize(250, 168); picker:SetFrameStrata("FULLSCREEN_DIALOG"); picker:EnableMouse(true); picker:SetClampedToScreen(true)
+		picker:SetBackdrop({ bgFile = "Interface\\Tooltips\\UI-Tooltip-Background", edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+			tile = true, tileSize = 16, edgeSize = 14, insets = { left = 4, right = 4, top = 4, bottom = 4 } })
+		picker:SetBackdropColor(0, 0, 0, 0.95)
+		ledger:HookScript("OnHide", function() picker:Hide() end)
+		local function Changed() PA:RefreshLedger(); picker.Update() end
+		local function Line(y, label, which)
+			local l = picker:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall"); l:SetPoint("TOPLEFT", 12, y); l:SetText(label)
+			local v = picker:CreateFontString(nil, "OVERLAY", "GameFontHighlight"); v:SetPoint("TOP", picker, "TOPLEFT", 150, y + 1)
+			local function Step(dir)
+				local from, to = PA:Range()
+				local n = IsShiftKeyDown() and 7 or 1
+				local today = DayNow()
+				if which == "from" then from = math.min(today, from + dir * n) else to = math.min(today, to + dir * n) end
+				if db.rangeSingle then from, to = (which == "from") and from or to, (which == "from") and from or to end
+				db.rangeFrom, db.rangeTo = math.min(from, to), math.max(from, to)
+				Changed()
+			end
+			local m = CreateFrame("Button", nil, picker, "UIPanelButtonTemplate"); m:SetSize(22, 20)
+			m:SetPoint("TOPLEFT", 72, y + 4); m:SetText("<"); m:SetScript("OnClick", function() Step(-1) end)
+			local p = CreateFrame("Button", nil, picker, "UIPanelButtonTemplate"); p:SetSize(22, 20)
+			p:SetPoint("TOPRIGHT", -12, y + 4); p:SetText(">"); p:SetScript("OnClick", function() Step(1) end)
+			return v, l, m, p
+		end
+		local title = picker:CreateFontString(nil, "OVERLAY", "GameFontNormal"); title:SetPoint("TOPLEFT", 12, -10); title:SetText("Dates column")
+		picker.fromV = Line(-34, "From")
+		picker.toV, picker.toL, picker.toM, picker.toP = Line(-60, "To")
+		local single = CreateFrame("CheckButton", nil, picker, "UICheckButtonTemplate"); single:SetSize(22, 22); single:SetPoint("TOPLEFT", 10, -82)
+		single.t = single:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall"); single.t:SetPoint("LEFT", single, "RIGHT", 2, 0); single.t:SetText("Single day")
+		single:SetScript("OnClick", function(self)
+			db.rangeSingle = self:GetChecked() and true or nil
+			if db.rangeSingle then local from = PA:Range(); db.rangeTo = from end
+			Changed()
+		end)
+		picker.single = single
+		local function Quick(x, y, label, fn)
+			local b = CreateFrame("Button", nil, picker, "UIPanelButtonTemplate"); b:SetSize(72, 20); b:SetPoint("TOPLEFT", x, y); b:SetText(label)
+			b:SetScript("OnClick", function() fn(DayNow()); Changed() end)
+		end
+		Quick(12, -110, "Today", function(d) db.rangeFrom, db.rangeTo, db.rangeSingle = d, d, true end)
+		Quick(88, -110, "Yesterday", function(d) db.rangeFrom, db.rangeTo, db.rangeSingle = d - 1, d - 1, true end)
+		Quick(164, -110, "Last 7", function(d) db.rangeFrom, db.rangeTo, db.rangeSingle = d - 6, d, nil end)
+		Quick(12, -134, "Last 14", function(d) db.rangeFrom, db.rangeTo, db.rangeSingle = d - 13, d, nil end)
+		Quick(88, -134, "Last 30", function(d) db.rangeFrom, db.rangeTo, db.rangeSingle = d - 29, d, nil end)
+		local close = CreateFrame("Button", nil, picker, "UIPanelCloseButton"); close:SetSize(24, 24); close:SetPoint("TOPRIGHT", -2, -2)
+		function picker.Update()
+			local from, to = PA:Range()
+			picker.fromV:SetText(DayText(from, true))
+			picker.toV:SetText(DayText(to, true))
+			local one = db.rangeSingle and true or false
+			picker.single:SetChecked(one)
+			picker.toV:SetAlpha(one and 0.4 or 1); picker.toL:SetAlpha(one and 0.4 or 1)
+			picker.toM:SetEnabled(not one); picker.toP:SetEnabled(not one)
+		end
+	end
+	picker:ClearAllPoints(); picker:SetPoint("TOP", anchor, "BOTTOM", 0, -2)
+	picker.Update()
+	picker:Show()
 end
 
 ---------------------------------------------------------------------------
@@ -1129,6 +1264,11 @@ SlashCmdList.PINTSACCOUNTANT = function(msg)
 		print("|cffd4a017Pint's|r: loose button " .. (db.floatButton and "shown." or "hidden - use the minimap button."))
 	elseif msg == "options" then
 		options:SetShown(not options:IsShown())
+	elseif msg == "zeros" then
+		db.showZeros = not db.showZeros
+		if ledger and ledger.hideBtn then ledger.hideBtn:SetChecked(not db.showZeros) end
+		Print(db.showZeros and "showing every category, empty ones too." or "empty categories hidden (they show once something lands in them).")
+		PA:RefreshLedger()
 	elseif msg == "reset" then
 		db.btnPos, db.dispPos = nil, nil
 		Print("button and display positions reset (after /reload).")
