@@ -589,6 +589,17 @@ local HEAD_FONT = CreateFont("PintsAccountantHeadFont"); HEAD_FONT:SetFontObject
 do local f, _, fl = GameFontNormal:GetFont(); HEAD_FONT:SetFont(f, 11, fl) end
 local NCOL = #PERIODS
 local SHEET_W = CAT_W + COL_W * NCOL
+-- which columns show, and where: the Dates column only when "Show Dates column" is ticked
+local colX, visW = {}, SHEET_W
+local function LayoutCols()
+	local n = 0
+	for c, p in ipairs(PERIODS) do
+		if p.key == "custom" and not (db and db.showDates) then colX[c] = nil
+		else n = n + 1; colX[c] = CAT_W + n * COL_W end
+	end
+	visW = CAT_W + n * COL_W
+	return visW
+end
 
 -- compact money for cells: 12g 04s 56c, 0 when nothing
 local curView = nil   -- nil = gold, or a currency's name
@@ -643,10 +654,14 @@ local function Fill(i, kind, label, values, color)
 		r.label:SetFontObject("PintsAccountantCellFont"); bg = { 1, 1, 1, (kind == "row" and i % 2 == 0) and 0.03 or 0 }
 	end
 	r.bg:SetColorTexture(bg[1], bg[2], bg[3], bg[4])
+	r:SetWidth(visW)
 	for c = 1, NCOL do
-		local v = values and values[c]
-		if type(v) == "number" then r.cells[c]:SetText(Cell(v, color))
-		else r.cells[c]:SetText(v or "") end
+		local fs = r.cells[c]
+		if colX[c] then
+			fs:ClearAllPoints(); fs:SetPoint("RIGHT", r, "LEFT", colX[c] - 6, 0); fs:Show()
+			local v = values and values[c]
+			if type(v) == "number" then fs:SetText(Cell(v, color)) else fs:SetText(v or "") end
+		else fs:Hide() end
 	end
 	r:Show()
 end
@@ -654,6 +669,30 @@ end
 function PA:RefreshLedger()
 	if not ledger or not ledger:IsShown() then return end
 	if ledger.rangeHead then ledger.rangeHead:SetText("|cff80c0ff" .. PA:RangeLabel() .. "|r  |cffaaaaaav|r") end
+	-- columns: the Dates one comes and goes with its box, the others close up
+	local w = LayoutCols()
+	if ledger.heads then
+		for c, fs in ipairs(ledger.heads) do
+			if colX[c] then fs:ClearAllPoints(); fs:SetPoint("RIGHT", ledger.head, "LEFT", colX[c] - 6, 0); fs:Show() else fs:Hide() end
+		end
+		if ledger.rangeBtn then
+			local c
+			for i, p in ipairs(PERIODS) do if p.key == "custom" then c = i end end
+			if colX[c] then ledger.rangeBtn:ClearAllPoints(); ledger.rangeBtn:SetPoint("TOPLEFT", ledger.head, "TOPLEFT", colX[c] - COL_W, 0); ledger.rangeBtn:Show()
+			else ledger.rangeBtn:Hide() end
+		end
+		local n = 0
+		for c = 1, NCOL do if colX[c] then n = n + 1 end end
+		for c = 0, NCOL do
+			local v = ledger.rules[c]
+			if c <= n then
+				local x = CAT_W + c * COL_W
+				v:ClearAllPoints(); v:SetPoint("TOPLEFT", ledger.head, "TOPLEFT", x, 0); v:SetPoint("BOTTOMLEFT", ledger, "BOTTOMLEFT", 14 + x, 12); v:Show()
+			else v:Hide() end
+		end
+		ledger.head:SetWidth(w); sheet:SetWidth(w)
+		ledger:SetWidth(w + 52)
+	end
 	if viewScope and viewScope ~= "account" and not db.chars[viewScope] then viewScope = nil end
 	local isAll = viewScope == "account"
 	local key = isAll and "account" or (viewScope or charKey)
@@ -855,6 +894,18 @@ local function CreateLedger()
 	end)
 	hide:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	ledger.hideBtn = hide
+	-- "Show Dates column": the column for a day or range you pick (off: it's not there at all)
+	local dates = CreateFrame("CheckButton", nil, ledger, "UICheckButtonTemplate")
+	dates:SetSize(22, 22); dates:SetPoint("LEFT", hide.label, "RIGHT", 16, 0)
+	dates.label = dates:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall"); dates.label:SetPoint("LEFT", dates, "RIGHT", 2, 0)
+	dates.label:SetText("Show Dates column (a day or range you pick)")
+	dates:SetScript("OnShow", function(self) self:SetChecked(db.showDates and true or false) end)
+	dates:SetScript("OnClick", function(self)
+		db.showDates = self:GetChecked() and true or nil
+		if not db.showDates then PA:HidePicker() end
+		PA:RefreshLedger()
+	end)
+	ledger.datesBtn = dates
 
 	-- tabs: Gold, then one per currency (WoW Forever)
 	ledger.tabs = {}
@@ -904,9 +955,11 @@ local function CreateLedger()
 	local hb = head:CreateTexture(nil, "BACKGROUND"); hb:SetAllPoints(); hb:SetColorTexture(1, 0.82, 0, 0.18)
 	local hl = head:CreateTexture(nil, "BORDER"); hl:SetHeight(1); hl:SetPoint("BOTTOMLEFT"); hl:SetPoint("BOTTOMRIGHT"); hl:SetColorTexture(1, 0.82, 0, 0.6)
 	local ct = head:CreateFontString(nil, "OVERLAY", "PintsAccountantHeadFont"); ct:SetPoint("LEFT", 6, 0); ct:SetText("Category")
+	ledger.heads = {}
 	for c, p in ipairs(PERIODS) do
 		local fs = head:CreateFontString(nil, "OVERLAY", "PintsAccountantHeadFont")
 		fs:SetPoint("RIGHT", head, "LEFT", CAT_W + c * COL_W - 6, 0); fs:SetText(p.label == "All" and "All time" or p.label)
+		ledger.heads[c] = fs
 		if p.key == "custom" then
 			-- the heading is a button: it shows the days picked, click to pick others
 			local b = CreateFrame("Button", nil, head)
@@ -921,7 +974,7 @@ local function CreateLedger()
 				GameTooltip:Show()
 			end)
 			b:SetScript("OnLeave", function() GameTooltip:Hide() end)
-			ledger.rangeHead = fs
+			ledger.rangeHead = fs; ledger.rangeBtn = b
 		end
 	end
 
@@ -932,12 +985,15 @@ local function CreateLedger()
 	sheet:SetSize(SHEET_W, 1)
 	sf:SetScrollChild(sheet)
 	-- column rules down the sheet
+	ledger.rules = {}
 	for c = 0, NCOL do
 		local x = CAT_W + c * COL_W
 		local v = ledger:CreateTexture(nil, "ARTWORK"); v:SetWidth(1)
 		v:SetPoint("TOPLEFT", head, "TOPLEFT", x, 0); v:SetPoint("BOTTOMLEFT", ledger, "BOTTOMLEFT", 14 + x, 12)
 		v:SetColorTexture(1, 1, 1, c == 0 and 0.18 or 0.08)
+		ledger.rules[c] = v
 	end
+	ledger.head = head
 
 	ledger:SetScript("OnShow", function() PA:RefreshLedger() end)
 	-- keep the session figures ticking while it's open
@@ -948,6 +1004,7 @@ end
 -- the day picker: From and To, a day back or forward at a time (Shift: a week), "Single day" keeps them the same,
 -- and quick picks
 local picker
+function PA:HidePicker() if picker then picker:Hide() end end
 function PA:ToggleRangePicker(anchor)
 	if picker and picker:IsShown() then picker:Hide(); return end
 	if not picker then
@@ -996,6 +1053,8 @@ function PA:ToggleRangePicker(anchor)
 		Quick(164, -110, "Last 7", function(d) db.rangeFrom, db.rangeTo, db.rangeSingle = d - 6, d, nil end)
 		Quick(12, -134, "Last 14", function(d) db.rangeFrom, db.rangeTo, db.rangeSingle = d - 13, d, nil end)
 		Quick(88, -134, "Last 30", function(d) db.rangeFrom, db.rangeTo, db.rangeSingle = d - 29, d, nil end)
+		-- back to how it starts: just today
+		Quick(164, -134, "Reset", function() db.rangeFrom, db.rangeTo, db.rangeSingle = nil, nil, nil end)
 		local close = CreateFrame("Button", nil, picker, "UIPanelCloseButton"); close:SetSize(24, 24); close:SetPoint("TOPRIGHT", -2, -2)
 		function picker.Update()
 			local from, to = PA:Range()

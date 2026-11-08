@@ -1,5 +1,10 @@
 Pint's Accountant - Changelog
 
+v1.1.3
+- Ledger: the "Dates" column only shows when "Show Dates column" (bottom of the ledger) is ticked - otherwise it's not
+  there at all.
+- Ledger: a Reset button in the Dates picker puts the column back to just today.
+
 v1.1.2
 - Ledger: categories with nothing in any column are left out, and show up as soon as something lands in them.
   A "Hide empty rows" box at the bottom of the ledger turns this on or off (so does /pa zeros).
