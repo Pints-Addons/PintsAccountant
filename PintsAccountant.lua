@@ -119,8 +119,17 @@ local function SessionBook(cname)
 	return session.cur[cname]
 end
 
-local function Record(dir, cat, amt, cname)
+-- every gold change is also kept as a line (when, what it was for, how much) for the ledger's detail lists
+local LOG_MAX = 4000
+local function Log(dir, cat, amt, what)
+	char.log = char.log or {}
+	local l = char.log
+	l[#l + 1] = { time(), dir, cat, amt, what }
+	if #l > LOG_MAX then table.remove(l, 1) end
+end
+local function Record(dir, cat, amt, cname, what)
 	if amt <= 0 then return end
+	if not cname then Log(dir, cat, amt, what) end
 	local b = Book(char, cname)
 	local h, d = HourNow(), DayNow()
 	b.hours[h] = b.hours[h] or {}
@@ -175,11 +184,11 @@ local function OnMoneyChanged()
 	if p and p.split then
 		-- Sent mail: postage first, anything beyond it was gold sent to a player.
 		local postage = math.min(amt, p.split)
-		Record("exp", "Postage", postage)
-		Record("exp", "Mail sent to players", amt - postage)
+		Record("exp", "Postage", postage, nil, p.what)
+		Record("exp", "Mail sent to players", amt - postage, nil, p.what)
 	else
 		local cat = (p and p.cat) or ContextCategory(dir) or (dir == "inc" and "Other income" or "Other expenses")
-		Record(dir, cat, amt)
+		Record(dir, cat, amt, nil, p and p.what)
 	end
 	PA:Refresh()
 end
@@ -307,45 +316,91 @@ local function HookTable(tbl, name, fn)
 	if tbl and type(tbl[name]) == "function" then hooksecurefunc(tbl, name, fn) end
 end
 
+-- what a gold change was for, in a few words ("Runecloth x20", "Repair all", "Flight to Gadgetzan")
+local function LinkText(link, n)
+	if not link then return nil end
+	n = tonumber(n) or 1
+	return link .. (n > 1 and (" x" .. n) or "")
+end
+local function ItemLinkByID(id) return id and ((select(2, ItemInfo(id))) or ("item " .. id)) end
+local function LocLink(loc) return loc and C_Item and C_Item.GetItemLink and loc.IsValid and loc:IsValid() and C_Item.GetItemLink(loc) or nil end
+local function MailWhat(i)
+	local invoiceType, itemName, playerName = GetInboxInvoiceInfo and GetInboxInvoiceInfo(i)
+	if invoiceType and itemName then return itemName .. (playerName and (" (" .. (invoiceType == "seller" and "bought by " or "") .. playerName .. ")") or "") end
+	local _, _, sender, subject = GetInboxHeaderInfo(i)
+	return (subject and subject ~= "" and subject or "mail") .. (sender and (" - from " .. sender) or "")
+end
 local function SetupHooks()
-	Hook("RepairAllItems", function(guild) if not guild then AddPending("exp", "Repairs") end end)
-	Hook("RepairCursorItem", function() AddPending("exp", "Repairs") end)
-	Hook("BuyMerchantItem", function(index) AddPending("exp", PurchaseCategory(index)) end)
-	Hook("BuybackItem", function() AddPending("exp", "Buyback") end)
-	Hook("BuyTrainerService", function()
-		local prof = (IsTradeskillTrainer and IsTradeskillTrainer()) or trainerIsProfession
-		AddPending("exp", prof and "Profession training" or "Class training")
+	Hook("RepairAllItems", function(guild) if not guild then AddPending("exp", "Repairs", { what = "Repair all" }) end end)
+	Hook("RepairCursorItem", function() AddPending("exp", "Repairs", { what = "Repair one item" }) end)
+	Hook("BuyMerchantItem", function(index, qty)
+		local stack = select(4, GetMerchantItemInfo and GetMerchantItemInfo(index)) or 1
+		AddPending("exp", PurchaseCategory(index), { what = LinkText(GetMerchantItemLink and GetMerchantItemLink(index), (qty or 1) * (stack or 1)) })
 	end)
-	Hook("TakeTaxiNode", function() AddPending("exp", "Flight paths") end)
-	Hook("PurchaseSlot", function() AddPending("exp", "Bank slots") end)
-	Hook("ConfirmTalentWipe", function() AddPending("exp", "Talent resets") end)
+	Hook("BuybackItem", function(index) AddPending("exp", "Buyback", { what = LinkText(GetBuybackItemLink and GetBuybackItemLink(index)) }) end)
+	Hook("BuyTrainerService", function(index)
+		local prof = (IsTradeskillTrainer and IsTradeskillTrainer()) or trainerIsProfession
+		local name, rank = GetTrainerServiceInfo and GetTrainerServiceInfo(index)
+		AddPending("exp", prof and "Profession training" or "Class training", { what = name and (name .. ((rank and rank ~= "") and (" (" .. rank .. ")") or "")) })
+	end)
+	Hook("TakeTaxiNode", function(i) AddPending("exp", "Flight paths", { what = TaxiNodeName and ("Flight to " .. (TaxiNodeName(i) or "?")) }) end)
+	Hook("PurchaseSlot", function() AddPending("exp", "Bank slots", { what = "Bank bag slot" }) end)
+	Hook("ConfirmTalentWipe", function() AddPending("exp", "Talent resets", { what = "Talent reset" }) end)
 	Hook("DepositGuildBankMoney", function() AddPending("exp", "Guild bank deposits") end)
 	Hook("WithdrawGuildBankMoney", function() AddPending("inc", "Guild bank withdrawals") end)
+	-- selling to a vendor: the item you right-clicked
+	local function Sold(bag, slot)
+		if not (MerchantFrame and MerchantFrame:IsShown()) then return end
+		local link, n
+		if C_Container and C_Container.GetContainerItemInfo then
+			local info = C_Container.GetContainerItemInfo(bag, slot)
+			if info then link, n = info.hyperlink, info.stackCount end
+		elseif GetContainerItemInfo then
+			local _, cnt, _, _, _, _, l = GetContainerItemInfo(bag, slot); link, n = l, cnt
+		end
+		local price = link and select(11, ItemInfo(link))
+		if price and price > 0 then AddPending("inc", "Vendor sales", { what = LinkText(link, n) }) end
+	end
+	if C_Container and C_Container.UseContainerItem then hooksecurefunc(C_Container, "UseContainerItem", Sold) end
+	if type(UseContainerItem) == "function" then hooksecurefunc("UseContainerItem", Sold) end
 
 	-- Mailbox
-	Hook("TakeInboxMoney", function(i) AddPending("inc", MailIncomeCategory(i)) end)
+	Hook("TakeInboxMoney", function(i) AddPending("inc", MailIncomeCategory(i), { what = MailWhat(i) }) end)
 	Hook("AutoLootMailItem", function(i)
 		local money, cod = select(5, GetInboxHeaderInfo(i))
-		if cod and cod > 0 then AddPending("exp", "COD payments") end
-		if money and money > 0 then AddPending("inc", MailIncomeCategory(i)) end
+		if cod and cod > 0 then AddPending("exp", "COD payments", { what = MailWhat(i) }) end
+		if money and money > 0 then AddPending("inc", MailIncomeCategory(i), { what = MailWhat(i) }) end
 	end)
 	Hook("TakeInboxItem", function(i)
 		local cod = select(6, GetInboxHeaderInfo(i))
-		if cod and cod > 0 then AddPending("exp", "COD payments") end
+		if cod and cod > 0 then AddPending("exp", "COD payments", { what = MailWhat(i) }) end
 	end)
-	Hook("SendMail", function()
+	Hook("SendMail", function(to, subject)
 		local postage = (GetSendMailPrice and GetSendMailPrice()) or 30
-		AddPending("exp", "Postage", { split = postage })
+		AddPending("exp", "Postage", { split = postage, what = "To " .. tostring(to or "?") .. ((subject and subject ~= "") and (": " .. subject) or "") })
 	end)
 
 	-- Auction house (older and newer APIs)
-	Hook("StartAuction", function() AddPending("exp", "Auction deposits") end)
-	Hook("PostAuction", function() AddPending("exp", "Auction deposits") end)
-	Hook("PlaceAuctionBid", function() AddPending("exp", "Auction purchases") end)
-	HookTable(C_AuctionHouse, "PostItem", function() AddPending("exp", "Auction deposits") end)
-	HookTable(C_AuctionHouse, "PostCommodity", function() AddPending("exp", "Auction deposits") end)
-	HookTable(C_AuctionHouse, "PlaceBid", function() AddPending("exp", "Auction purchases") end)
-	HookTable(C_AuctionHouse, "ConfirmCommoditiesPurchase", function() AddPending("exp", "Auction purchases") end)
+	Hook("StartAuction", function()
+		local name, _, count = GetAuctionSellItemInfo and GetAuctionSellItemInfo()
+		AddPending("exp", "Auction deposits", { what = name and (name .. ((count or 1) > 1 and (" x" .. count) or "")) })
+	end)
+	Hook("PostAuction", function()
+		local name, _, count = GetAuctionSellItemInfo and GetAuctionSellItemInfo()
+		AddPending("exp", "Auction deposits", { what = name and (name .. ((count or 1) > 1 and (" x" .. count) or "")) })
+	end)
+	Hook("PlaceAuctionBid", function(kind, index) AddPending("exp", "Auction purchases", { what = LinkText(GetAuctionItemLink and GetAuctionItemLink(kind, index)) }) end)
+	HookTable(C_AuctionHouse, "PostItem", function(loc) AddPending("exp", "Auction deposits", { what = LinkText(LocLink(loc)) }) end)
+	HookTable(C_AuctionHouse, "PostCommodity", function(loc, _, qty) AddPending("exp", "Auction deposits", { what = LinkText(LocLink(loc), qty) }) end)
+	HookTable(C_AuctionHouse, "PlaceBid", function(auctionID)
+		local what
+		local info = C_AuctionHouse.GetAuctionInfoByID and C_AuctionHouse.GetAuctionInfoByID(auctionID)
+		if info and info.itemLink then what = info.itemLink elseif info and info.itemKey then what = ItemLinkByID(info.itemKey.itemID) end
+		AddPending("exp", "Auction purchases", { what = what })
+	end)
+	HookTable(C_AuctionHouse, "ConfirmCommoditiesPurchase", function(itemID, qty) AddPending("exp", "Auction purchases", { what = LinkText(ItemLinkByID(itemID), qty) }) end)
+	-- quest rewards: the quest's name
+	Hook("GetQuestReward", function() AddPending("inc", "Quest rewards", { what = GetTitleText and GetTitleText() }) end)
 end
 
 ---------------------------------------------------------------------------
@@ -628,6 +683,20 @@ local function Row(i)
 	r.line:SetColorTexture(1, 1, 1, 0.06)
 	r.hl = r:CreateTexture(nil, "HIGHLIGHT"); r.hl:SetAllPoints(); r.hl:SetColorTexture(1, 0.82, 0, 0.07)
 	r:EnableMouse(true)
+	-- click an income or expense line (or a total) for what made it up: the column you click picks the period
+	r:SetScript("OnMouseUp", function(self)
+		if not self.detail then return end
+		local x = GetCursorPosition() / self:GetEffectiveScale() - self:GetLeft()
+		local period = "all"
+		for c, p in ipairs(PERIODS) do if colX[c] and x > colX[c] - COL_W and x <= colX[c] then period = p.key end end
+		PA:ShowDetail(self.detail[1], self.detail[2], period)
+	end)
+	r:SetScript("OnEnter", function(self)
+		if not self.detail then return end
+		GameTooltip:SetOwner(self, "ANCHOR_CURSOR"); GameTooltip:AddLine("Click for what's in it", 1, 0.82, 0)
+		GameTooltip:AddLine("(the column you click picks the period)", 0.7, 0.7, 0.7); GameTooltip:Show()
+	end)
+	r:SetScript("OnLeave", function() GameTooltip:Hide() end)
 	r.label = r:CreateFontString(nil, "OVERLAY", "PintsAccountantCellFont"); r.label:SetPoint("LEFT", 6, 0)
 	r.label:SetWidth(CAT_W - 10); r.label:SetJustifyH("LEFT"); r.label:SetWordWrap(false)
 	r.cells = {}
@@ -705,7 +774,7 @@ function PA:RefreshLedger()
 	local sums = {}
 	for c, p in ipairs(PERIODS) do sums[c] = PA:Summary(p.key, viewScope, curView) end
 	local i = 0
-	local function line(kind, label, values, color) i = i + 1; Fill(i, kind, label, values, color) end
+	local function line(kind, label, values, color, detail) i = i + 1; Fill(i, kind, label, values, color); rows[i].detail = (not curView) and detail or nil end
 	local function catValues(dir, cat) local v = {}; for c = 1, NCOL do v[c] = sums[c][dir][cat] or 0 end; return v end
 	local function totals(dir) local v = {}; for c = 1, NCOL do v[c] = Total(sums[c][dir]) end; return v end
 
@@ -718,17 +787,17 @@ function PA:RefreshLedger()
 			for c = 1, NCOL do if v[c] ~= 0 then any = true; break end end
 			if not any then return end
 		end
-		line("row", "   " .. cat, v)
+		line("row", "   " .. cat, v, nil, { dir, cat })
 	end
 	line("section", "Income")
 	for _, cat in ipairs(INC) do catLine("inc", cat) end
 	local inc = totals("inc")
-	line("total", "Total income", inc, "|cff40ff40")
+	line("total", "Total income", inc, "|cff40ff40", { "inc" })
 	line("blank", "")
 	line("section", "Expenses")
 	for _, cat in ipairs(EXP) do catLine("exp", cat) end
 	local exp = totals("exp")
-	line("total", "Total expenses", exp, "|cffff5050")
+	line("total", "Total expenses", exp, "|cffff5050", { "exp" })
 	line("blank", "")
 	local net = {}
 	for c = 1, NCOL do net[c] = inc[c] - exp[c] end
@@ -809,6 +878,114 @@ function PA:RefreshLedger()
 	local room = UIParent:GetHeight() - 40
 	ledger:SetHeight(math.max(300, math.min(want, room)))
 	ledger.net:SetText("Session net  " .. (curView and ((net[1] > 0 and "|cff40ff40+" or net[1] < 0 and "|cffff5050" or "") .. net[1] .. "|r") or Signed(net[1])))
+end
+
+---------------------------------------------------------------------------
+-- Detail: every gold change in a line of the ledger, for the period clicked
+---------------------------------------------------------------------------
+local detail
+local DROWS, DROW_H = 22, 16
+function PA:DetailEntries(dir, cat, period)
+	local key = viewScope or charKey
+	local chars = (key == "account") and db.chars or { [key] = db.chars[key] }
+	local now, d = time(), DayNow()
+	local from, to = 0, math.huge
+	if period == "session" then from = session.start; if key ~= "account" and key ~= charKey then from = math.huge end
+	elseif period == "day" then from = TodayStart()
+	elseif period == "custom" then local a, b = PA:Range(); from, to = a * 86400, (b + 1) * 86400 - 1
+	elseif PERIOD_DAYS[period] then from = (d - PERIOD_DAYS[period] + 1) * 86400 end
+	local out, total = {}, 0
+	for k, c in pairs(chars) do
+		if type(c) == "table" and c.log and not (period == "session" and k ~= charKey) then
+			for _, e in ipairs(c.log) do
+				if e[1] >= from and e[1] <= to and e[2] == dir and (not cat or e[3] == cat) then
+					out[#out + 1] = { t = e[1], cat = e[3], amt = e[4], what = e[5], who = (key == "account") and k or nil }
+					total = total + e[4]
+				end
+			end
+		end
+	end
+	table.sort(out, function(a, b) return a.t > b.t end)
+	return out, total
+end
+local function DetailRow(i)
+	local r = detail.rows[i]
+	if r then return r end
+	r = CreateFrame("Button", nil, detail.list)
+	r:SetSize(560, DROW_H); r:SetPoint("TOPLEFT", 0, -(i - 1) * DROW_H)
+	r.hl = r:CreateTexture(nil, "HIGHLIGHT"); r.hl:SetAllPoints(); r.hl:SetColorTexture(1, 0.82, 0, 0.08)
+	r.when = r:CreateFontString(nil, "OVERLAY", "PintsAccountantCellFont"); r.when:SetPoint("LEFT", 4, 0); r.when:SetWidth(96); r.when:SetJustifyH("LEFT")
+	r.what = r:CreateFontString(nil, "OVERLAY", "PintsAccountantCellFont"); r.what:SetPoint("LEFT", 104, 0); r.what:SetWidth(340); r.what:SetJustifyH("LEFT"); r.what:SetWordWrap(false)
+	r.amt = r:CreateFontString(nil, "OVERLAY", "PintsAccountantCellFont"); r.amt:SetPoint("RIGHT", -6, 0); r.amt:SetWidth(110); r.amt:SetJustifyH("RIGHT")
+	r:SetScript("OnEnter", function(self)
+		if self.link then GameTooltip:SetOwner(self, "ANCHOR_RIGHT"); pcall(GameTooltip.SetHyperlink, GameTooltip, self.link); GameTooltip:Show() end
+	end)
+	r:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	r:SetScript("OnClick", function(self) if self.full and IsModifiedClick("CHATLINK") and ChatEdit_InsertLink then ChatEdit_InsertLink(self.full) end end)
+	detail.rows[i] = r
+	return r
+end
+function PA:RenderDetail()
+	local st = detail.state
+	local list, total = PA:DetailEntries(st.dir, st.cat, st.period)
+	-- grouped: one line per item (or per what), how many times, the total
+	if db.detailGroup then
+		local by, order = {}, {}
+		for _, e in ipairs(list) do
+			local k = (e.what or ("(" .. e.cat .. ")")) .. (st.cat and "" or ("|" .. e.cat))
+			local g = by[k]
+			if not g then g = { what = e.what, cat = e.cat, amt = 0, n = 0, t = e.t }; by[k] = g; order[#order + 1] = g end
+			g.amt = g.amt + e.amt; g.n = g.n + 1
+		end
+		table.sort(order, function(a, b) return a.amt > b.amt end)
+		list = order
+	end
+	local pname = "All time"
+	for _, p in ipairs(PERIODS) do if p.key == st.period then pname = (p.key == "custom") and PA:RangeLabel() or (p.label == "All" and "All time" or p.label) end end
+	detail.title:SetText((st.cat or (st.dir == "inc" and "All income" or "All expenses")) .. "  |cffaaaaaa-  " .. pname .. "|r")
+	detail.sum:SetText(#list .. (db.detailGroup and " kinds" or " entries") .. "   total " .. Cell(total, st.dir == "inc" and "|cff40ff40" or "|cffff5050"))
+	detail.group:SetChecked(db.detailGroup and true or false)
+	for i, e in ipairs(list) do
+		local r = DetailRow(i)
+		r.when:SetText(db.detailGroup and ("|cffaaaaaa" .. e.n .. "x|r") or ("|cffaaaaaa" .. date("%b %d %H:%M", e.t) .. "|r"))
+		local w = e.what or "|cff888888(no detail recorded)|r"
+		if not st.cat then w = w .. "  |cff888888" .. e.cat .. "|r" end
+		if e.who then w = w .. "  |cff7090c0" .. e.who:match("^[^-]+") .. "|r" end
+		r.what:SetText(w)
+		r.link = e.what and e.what:match("|H(item:.-)|h") or nil
+		r.full = e.what and e.what:match("(|c%x+|Hitem:.-|h.-|h|r)") or nil
+		r.amt:SetText(Cell(e.amt))
+		r:Show()
+	end
+	for i = #list + 1, #detail.rows do detail.rows[i]:Hide() end
+	detail.empty:SetShown(#list == 0)
+	detail.list:SetHeight(math.max(1, #list * DROW_H))
+end
+function PA:ShowDetail(dir, cat, period)
+	if not detail then
+		detail = CreateFrame("Frame", "PintsAccountantDetail", UIParent, "BasicFrameTemplateWithInset")
+		detail:SetSize(600, 440); detail:SetFrameStrata("DIALOG"); detail:SetToplevel(true)
+		detail:SetMovable(true); detail:SetClampedToScreen(true); detail:EnableMouse(true)
+		detail:RegisterForDrag("LeftButton"); detail:SetScript("OnDragStart", detail.StartMoving); detail:SetScript("OnDragStop", detail.StopMovingOrSizing)
+		tinsert(UISpecialFrames, "PintsAccountantDetail")
+		detail.title = detail:CreateFontString(nil, "OVERLAY", "GameFontHighlight"); detail.title:SetPoint("TOP", 0, -5)
+		detail.sum = detail:CreateFontString(nil, "OVERLAY", "PintsAccountantCellFont"); detail.sum:SetPoint("TOPLEFT", 16, -32)
+		detail.group = CreateFrame("CheckButton", nil, detail, "UICheckButtonTemplate"); detail.group:SetSize(22, 22); detail.group:SetPoint("TOPRIGHT", -110, -27)
+		local gl = detail.group:CreateFontString(nil, "OVERLAY", "PintsAccountantCellFont"); gl:SetPoint("LEFT", detail.group, "RIGHT", 2, 0); gl:SetText("Group by item")
+		detail.group:SetScript("OnClick", function(self) db.detailGroup = self:GetChecked() and true or false; PA:RenderDetail() end)
+		local sf = CreateFrame("ScrollFrame", "PintsAccountantDetailScroll", detail, "UIPanelScrollFrameTemplate")
+		sf:SetPoint("TOPLEFT", 12, -56); sf:SetPoint("BOTTOMRIGHT", -32, 30)
+		detail.list = CreateFrame("Frame", nil, sf); detail.list:SetSize(560, 1); sf:SetScrollChild(detail.list)
+		detail.rows = {}
+		detail.empty = detail:CreateFontString(nil, "OVERLAY", "PintsAccountantCellFont"); detail.empty:SetPoint("TOP", 0, -80)
+		detail.empty:SetWidth(520); detail.empty:SetText("|cffaaaaaaNothing recorded here for this period.\nItem detail is kept from Pint's Accountant 1.1.4 on - gold from before that only shows in the totals.|r")
+		local note = detail:CreateFontString(nil, "OVERLAY", "PintsAccountantCellFont"); note:SetPoint("BOTTOMLEFT", 16, 10)
+		note:SetText("|cff888888Hover an item for its tooltip, Shift-click to link it.|r")
+	end
+	detail.state = { dir = dir, cat = cat, period = period or "all" }
+	if ledger then detail:ClearAllPoints(); detail:SetPoint("TOPLEFT", ledger, "TOPRIGHT", 4, 0) end
+	detail:Show()
+	PA:RenderDetail()
 end
 
 local function CreateLedger()
@@ -1199,9 +1376,56 @@ end
 -- Setup and events
 ---------------------------------------------------------------------------
 local function InitCharacter()
-	charKey = (GetUnitName and GetUnitName("player", false) or UnitName("player")) .. "-" .. GetRealmName()
-	-- WoW Forever: characters saved under their first name alone (before second names were known) are cleared once
+	-- the realm's name can come back empty at login (seen on WoW Forever): use the last one we knew, so the character
+	-- doesn't start a fresh, empty ledger under "Name-"
 	local realm = GetRealmName()
+	if type(realm) ~= "string" or realm == "" then realm = (GetNormalizedRealmName and GetNormalizedRealmName()) or "" end
+	local myName = (GetUnitName and GetUnitName("player", false) or UnitName("player"))
+	if realm == "" then realm = db.lastRealm or "" end
+	if realm == "" then      -- (not known yet: the realm this character was saved under before)
+		for k in pairs(db.chars) do
+			if k:sub(1, #myName + 1) == myName .. "-" and #k > #myName + 1 then realm = k:sub(#myName + 2) break end
+		end
+	end
+	if realm ~= "" then db.lastRealm = realm end
+	charKey = myName .. "-" .. realm
+	-- a ledger already started under the blank realm is added back into the real one
+	local lost = realm ~= "" and db.chars[myName .. "-"]
+	if lost then
+		local function AddInto(into, from)       -- dir -> category -> amount
+			for dir, cats in pairs(from or {}) do
+				if type(cats) == "table" then
+					into[dir] = into[dir] or {}
+					for cat, v in pairs(cats) do if type(v) == "number" then into[dir][cat] = (into[dir][cat] or 0) + v end end
+				end
+			end
+		end
+		local function Book2(into, from)
+			into.allTime = into.allTime or { inc = {}, exp = {} }; AddInto(into.allTime, from.allTime)
+			for _, k in ipairs({ "hours", "days" }) do
+				into[k] = into[k] or {}
+				for t, v in pairs(from[k] or {}) do into[k][t] = into[k][t] or {}; AddInto(into[k][t], v) end
+			end
+		end
+		local real = db.chars[charKey] or {}
+		db.chars[charKey] = real
+		Book2(real, lost)
+		for cname, b in pairs(lost.cur or {}) do
+			real.cur = real.cur or {}
+			real.cur[cname] = real.cur[cname] or { allTime = { inc = {}, exp = {} }, hours = {}, days = {} }
+			Book2(real.cur[cname], b)
+			if b.qty then real.cur[cname].qty = b.qty end
+		end
+		if lost.log then
+			real.log = real.log or {}
+			for _, e in ipairs(lost.log) do real.log[#real.log + 1] = e end
+			table.sort(real.log, function(x, y) return x[1] < y[1] end)
+		end
+		if lost.money and (lost.moneyTime or 0) >= (real.moneyTime or 0) then real.money, real.moneyTime = lost.money, lost.moneyTime end
+		real.class = real.class or lost.class
+		db.chars[myName .. "-"] = nil
+	end
+	-- WoW Forever: characters saved under their first name alone (before second names were known) are cleared once
 	-- (done again as "fullNames2": the first time, Pint's Alts' old list put the first-name entries straight back)
 	if charKey:sub(1, #charKey - #realm - 1):find(" ") and not (db.fullNames2 and db.fullNames2[realm]) then
 		db.fullNames2 = db.fullNames2 or {}; db.fullNames2[realm] = true
@@ -1222,6 +1446,11 @@ local function InitCharacter()
 	local h, d = HourNow(), DayNow()
 	for hour in pairs(char.hours) do if hour <= h - 48 then char.hours[hour] = nil end end
 	for day in pairs(char.days) do if day <= d - 400 then char.days[day] = nil end end
+	if char.log then
+		local cut, keep = time() - 400 * 86400, {}
+		for _, e in ipairs(char.log) do if e[1] >= cut then keep[#keep + 1] = e end end
+		char.log = keep
+	end
 	for _, b in pairs(char.cur or {}) do
 		for hour in pairs(b.hours or {}) do if hour <= h - 48 then b.hours[hour] = nil end end
 		for day in pairs(b.days or {}) do if day <= d - 400 then b.days[day] = nil end end
@@ -1278,8 +1507,7 @@ ev:SetScript("OnEvent", function(self, event, ...)
 	elseif event == "CHAT_MSG_MONEY" then
 		Pulse("loot", 2)
 	elseif event == "QUEST_TURNED_IN" then
-		AddPending("inc", "Quest rewards")
-		Pulse("quest", 3)
+		Pulse("quest", 3)        -- (the quest's name and reward come from the GetQuestReward hook)
 	elseif event == "CURRENCY_DISPLAY_UPDATE" then
 		local id = ...
 		if type(id) == "number" and not (db.currencies and next(db.currencies)) then pcall(Learn) end

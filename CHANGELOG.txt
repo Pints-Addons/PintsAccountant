@@ -1,5 +1,16 @@
 Pint's Accountant - Changelog
 
+v1.1.5
+- Your history is back: when the game hadn't named the realm yet at login (seen on WoW Forever), the ledger started
+  a new, empty record under "Name-" and the totals from before seemed gone. It now uses the realm it knew, and adds
+  what was recorded under the blank one back into your real ledger.
+
+v1.1.4
+- Ledger: click an income or expense line (or Total income / Total expenses) for every gold change in it - when, what
+  it was (the item and how many, the trainer skill, the flight, the mail and who from, the quest...) and how much. The
+  column you click picks the period. Group by item adds up the same item. Hover an item for its tooltip, Shift-click to
+  link it. (Kept from this version on; gold from before only shows in the totals.)
+
 v1.1.3
 - Ledger: the "Dates" column only shows when "Show Dates column" (bottom of the ledger) is ticked - otherwise it's not
   there at all.
